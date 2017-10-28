@@ -10,6 +10,7 @@ import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.influxdb.impl.Preconditions;
@@ -20,7 +21,27 @@ import org.influxdb.impl.Preconditions;
  * @author stefan.majer [at] gmail.com
  *
  */
+@SuppressWarnings("WeakerAccess")
 public class Point {
+
+  interface PointBuilderPool {
+    default PoolablePointBuilder borrowPointBuilder() {
+      return new Builder();
+    }
+
+    default void shutdown() {
+    }
+
+    interface PoolablePointBuilder {
+      default Point createPoint() {
+        return new Point();
+      }
+
+      default void release() {
+      }
+    }
+  }
+
   private String measurement;
   private Map<String, String> tags;
   private Long time;
@@ -44,7 +65,30 @@ public class Point {
   private static final ThreadLocal<Map<String, MeasurementStringBuilder>> CACHED_STRINGBUILDERS =
           ThreadLocal.withInitial(HashMap::new);
 
+  private static final AtomicReference<PointBuilderPool> BUILDER_POOL = new AtomicReference<>();
+
+  static {
+    final String pool = System.getProperty("org.influxdb.pointBuilderPool", "default");
+    switch (pool) {
+      case "default":
+        setPointBuilderPool(new DefaultPointBuilderPool());
+        break;
+      case "storm":
+        setPointBuilderPool(new StormPointBuilderPool());
+        break;
+      default:
+        setPointBuilderPool(createCustomPointBuilderPool(pool));
+    }
+  }
+
   Point() {
+  }
+
+  public static void setPointBuilderPool(final PointBuilderPool builderPool) {
+    final PointBuilderPool previousPool = BUILDER_POOL.getAndSet(builderPool);
+    if (previousPool != null) {
+      previousPool.shutdown();
+    }
   }
 
   /**
@@ -56,7 +100,9 @@ public class Point {
    */
 
   public static Builder measurement(final String measurement) {
-    return new Builder(measurement);
+    final Builder builder = (Builder) BUILDER_POOL.get().borrowPointBuilder();
+    builder.measurement = measurement;
+    return builder;
   }
 
   /**
@@ -65,18 +111,15 @@ public class Point {
    * @author stefan.majer [at] gmail.com
    *
    */
-  public static final class Builder {
-    private final String measurement;
+  @SuppressWarnings("unused")
+  public static class Builder implements PointBuilderPool.PoolablePointBuilder {
+    private String measurement;
     private final Map<String, String> tags = new TreeMap<>();
+    private final Map<String, Object> fields = new TreeMap<>();
     private Long time;
     private TimeUnit precision;
-    private final Map<String, Object> fields = new TreeMap<>();
 
-    /**
-     * @param measurement
-     */
-    Builder(final String measurement) {
-      this.measurement = measurement;
+    Builder() {
     }
 
     /**
@@ -199,17 +242,29 @@ public class Point {
      * @return the newly created Point.
      */
     public Point build() {
-      Preconditions.checkNonEmptyString(this.measurement, "measurement");
-      Preconditions.checkPositiveNumber(this.fields.size(), "fields size");
-      Point point = new Point();
-      point.setFields(this.fields);
-      point.setMeasurement(this.measurement);
-      if (this.time != null) {
+      Point point = createPoint();
+      try {
+        Preconditions.checkNonEmptyString(this.measurement, "measurement");
+        Preconditions.checkPositiveNumber(this.fields.size(), "fields size");
+
+        point.setTags(new TreeMap<>(this.tags));
+        point.setFields(new HashMap<>(this.fields));
+
+        point.setMeasurement(this.measurement);
+        if (this.time != null) {
           point.setTime(this.time);
           point.setPrecision(this.precision);
+        }
+      } finally {
+        this.release();
       }
-      point.setTags(this.tags);
+
       return point;
+    }
+
+    void reset() {
+      tags.clear();
+      fields.clear();
     }
   }
 
@@ -388,5 +443,22 @@ public class Point {
       sb.setLength(length);
       return sb;
     }
+  }
+
+  private static PointBuilderPool createCustomPointBuilderPool(final String pool) {
+    ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+    if (classLoader == null) {
+      classLoader = Point.class.getClassLoader();
+    }
+
+    try {
+      return (PointBuilderPool) classLoader.loadClass(pool).newInstance();
+    } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+      throw new RuntimeException("Unable to instantiate custom PointBuilderPool", e);
+    }
+  }
+
+  private static class DefaultPointBuilderPool implements PointBuilderPool {
+    // default interface methods
   }
 }
