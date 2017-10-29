@@ -25,18 +25,15 @@ import org.influxdb.impl.Preconditions;
 public class Point {
 
   interface PointBuilderPool {
-    default PoolablePointBuilder borrowPointBuilder() {
+    default Point.Builder borrowPointBuilder() {
       return new Builder();
     }
 
     default void shutdown() {
     }
 
+    @SuppressWarnings("unused")
     interface PoolablePointBuilder {
-      default Point createPoint() {
-        return new Point();
-      }
-
       default void release() {
       }
     }
@@ -100,7 +97,7 @@ public class Point {
    */
 
   public static Builder measurement(final String measurement) {
-    final Builder builder = (Builder) BUILDER_POOL.get().borrowPointBuilder();
+    final Builder builder = BUILDER_POOL.get().borrowPointBuilder();
     builder.measurement = measurement;
     return builder;
   }
@@ -112,7 +109,7 @@ public class Point {
    *
    */
   @SuppressWarnings("unused")
-  public static class Builder implements PointBuilderPool.PoolablePointBuilder {
+  public static class Builder {
     private String measurement;
     private final Map<String, String> tags = new TreeMap<>();
     private final Map<String, Object> fields = new TreeMap<>();
@@ -242,24 +239,24 @@ public class Point {
      * @return the newly created Point.
      */
     public Point build() {
-      Point point = createPoint();
-      try {
-        Preconditions.checkNonEmptyString(this.measurement, "measurement");
-        Preconditions.checkPositiveNumber(this.fields.size(), "fields size");
+      final Point point = createPoint();
+      Preconditions.checkNonEmptyString(this.measurement, "measurement");
+      Preconditions.checkPositiveNumber(this.fields.size(), "fields size");
 
-        point.setTags(new TreeMap<>(this.tags));
-        point.setFields(new HashMap<>(this.fields));
+      point.setTags(new TreeMap<>(this.tags));
+      point.setFields(new HashMap<>(this.fields));
 
-        point.setMeasurement(this.measurement);
-        if (this.time != null) {
-          point.setTime(this.time);
-          point.setPrecision(this.precision);
-        }
-      } finally {
-        this.release();
+      point.setMeasurement(this.measurement);
+      if (this.time != null) {
+        point.setTime(this.time);
+        point.setPrecision(this.precision);
       }
 
       return point;
+    }
+
+    protected Point createPoint() {
+      return new Point();
     }
 
     void reset() {
