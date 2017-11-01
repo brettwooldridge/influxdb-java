@@ -312,6 +312,15 @@ public class Point {
     this.fields = fields;
   }
 
+  /**
+   * This method is called after a {@link Point} has been inserted into the database to release the Point object
+   * back to the pool from which it was allocated.  By default, with unpooled Points, this method does nothing,
+   * but pools that implement Point-pooling should override it with appropriate behavior.
+   */
+  public void release() {
+    // no behavior by default
+  }
+
   @Override
   public boolean equals(final Object o) {
     if (this == o) {

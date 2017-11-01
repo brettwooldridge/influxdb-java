@@ -308,15 +308,21 @@ public class InfluxDBImpl implements InfluxDB {
   @Override
   public void write(final BatchPoints batchPoints) {
     this.batchedCount.add(batchPoints.getPoints().size());
-    RequestBody lineProtocol = RequestBody.create(MEDIA_TYPE_STRING, batchPoints.lineProtocol());
-    execute(this.influxDBService.writePoints(
-        this.username,
-        this.password,
-        batchPoints.getDatabase(),
-        batchPoints.getRetentionPolicy(),
-        TimeUtil.toTimePrecision(TimeUnit.NANOSECONDS),
-        batchPoints.getConsistency().value(),
-        lineProtocol));
+    try {
+      RequestBody lineProtocol = RequestBody.create(MEDIA_TYPE_STRING, batchPoints.lineProtocol());
+      execute(this.influxDBService.writePoints(
+          this.username,
+          this.password,
+          batchPoints.getDatabase(),
+          batchPoints.getRetentionPolicy(),
+          TimeUtil.toTimePrecision(TimeUnit.NANOSECONDS),
+          batchPoints.getConsistency().value(),
+          lineProtocol));
+    } finally {
+      for (Point point : batchPoints.getPoints()) {
+        point.release();
+      }
+    }
   }
 
   @Override
@@ -652,5 +658,27 @@ public class InfluxDBImpl implements InfluxDB {
         .append("\"");
     execute(this.influxDBService.postQuery(this.username, this.password,
         Query.encode(queryBuilder.toString())));
+  }
+
+  private static final class PointReleasingCallback implements Callback {
+    private final BatchPoints batchPoints;
+
+    PointReleasingCallback(final BatchPoints batchPoints) {
+      this.batchPoints = batchPoints;
+    }
+
+    @Override
+    public void onResponse(final Call call, final Response response) {
+      for (Point point : batchPoints.getPoints()) {
+        point.release();
+      }
+    }
+
+    @Override
+    public void onFailure(final Call call, final Throwable t) {
+      for (Point point : batchPoints.getPoints()) {
+        point.release();
+      }
+    }
   }
 }
